@@ -40,7 +40,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 <p class="sub">سکرپٹ ڈالیں، سین بنائیں، کلپس ڈھونڈیں، ایک ZIP ڈاؤن لوڈ کریں۔</p>
 
 <div class="box">
-  <label for="key">Pexels API Key (مفت: pexels.com/api)</label>
+  <label for="prov">ذریعہ (کلپس کہاں سے آئیں)</label>
+  <select id="prov"><option value="pixabay">Pixabay (مفت key فوراً ملتی ہے)</option><option value="pexels">Pexels (اگر آپ کے پاس key ہو)</option></select>
+  <label for="key" style="margin-top:10px">API Key</label>
   <input id="key" type="password" placeholder="یہاں ایک بار paste کریں" autocomplete="off">
 </div>
 
@@ -71,8 +73,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 const $=id=>document.getElementById(id);
 const STOP=new Set("the and but for with from this that these those into over under then than very just you your our they their his her not does did have has had will would can could should about there here when where who what which while were been being them also some more most only your".split(" "));
 let scenes=[];
-try{$('key').value=localStorage.getItem('pk')||''}catch(e){}
-$('key').onchange=()=>{try{localStorage.setItem('pk',$('key').value.trim())}catch(e){}};
+const loadKey=()=>{try{$('key').value=localStorage.getItem('k_'+$('prov').value)||''}catch(e){}};
+try{const p=localStorage.getItem('prov');if(p)$('prov').value=p}catch(e){}
+loadKey();
+$('prov').onchange=()=>{try{localStorage.setItem('prov',$('prov').value)}catch(e){}loadKey()};
+$('key').onchange=()=>{try{localStorage.setItem('k_'+$('prov').value,$('key').value.trim())}catch(e){}};
 const st=t=>$('status').textContent=t;
 
 function kw(t){
@@ -118,22 +123,32 @@ function drawClips(i){
   });
 }
 
-async function search(q,n,o){
-  const r=await fetch('https://api.pexels.com/videos/search?query='+encodeURIComponent(q)+'&per_page='+n+'&orientation='+o,
-    {headers:{Authorization:$('key').value.trim()}});
-  if(r.status===401)throw new Error('API key غلط ہے');
+async function getClips(q,n,o){
+  const key=$('key').value.trim();
+  if($('prov').value==='pexels'){
+    const r=await fetch('https://api.pexels.com/videos/search?query='+encodeURIComponent(q)+'&per_page='+n+'&orientation='+o,{headers:{Authorization:key}});
+    if(r.status===401)throw new Error('API key غلط ہے');
+    if(r.status===429)throw new Error('حد ختم، کچھ دیر بعد کوشش کریں');
+    if(!r.ok)throw new Error('خرابی '+r.status);
+    return ((await r.json()).videos||[]).map(v=>{
+      const f=v.video_files.filter(x=>x.file_type==='video/mp4'&&x.width).sort((a,b)=>Math.abs(Math.max(a.width,a.height)-1280)-Math.abs(Math.max(b.width,b.height)-1280))[0];
+      return f&&{id:'px'+v.id,image:v.image,link:f.link,width:Math.min(f.width,f.height),dur:v.duration};
+    }).filter(Boolean);
+  }
+  const r=await fetch('https://pixabay.com/api/videos/?key='+encodeURIComponent(key)+'&q='+encodeURIComponent(q)+'&per_page='+Math.max(3,n*3)+'&safesearch=true');
+  if(r.status===400||r.status===401)throw new Error('API key غلط ہے');
   if(r.status===429)throw new Error('حد ختم، کچھ دیر بعد کوشش کریں');
   if(!r.ok)throw new Error('خرابی '+r.status);
-  return (await r.json()).videos||[];
-}
-function pick(v){
-  const f=v.video_files.filter(x=>x.file_type==='video/mp4'&&x.width);
-  f.sort((a,b)=>Math.abs(Math.max(a.width,a.height)-1280)-Math.abs(Math.max(b.width,b.height)-1280));
-  return f[0];
+  return ((await r.json()).hits||[]).map(h=>{
+    const f=['medium','small','large','tiny'].map(k=>h.videos&&h.videos[k]).find(x=>x&&x.url);
+    if(!f)return null;
+    if((o==='portrait')!==(f.height>f.width))return null;
+    return {id:'pb'+h.id,image:f.thumbnail,link:f.url,width:Math.min(f.width,f.height),dur:h.duration};
+  }).filter(Boolean);
 }
 
 $('find').onclick=async()=>{
-  if(!$('key').value.trim()){st('پہلے Pexels API key ڈالیں۔');return}
+  if(!$('key').value.trim()){st('پہلے API key ڈالیں۔');return}
   $('find').disabled=true;$('zip').disabled=true;
   const per=+$('per').value,ori=$('ori').value,used=new Set();
   try{
@@ -141,14 +156,13 @@ $('find').onclick=async()=>{
       const s=scenes[i];s.clips=[];
       st('ڈھونڈ رہا ہوں: سین '+(i+1)+' / '+scenes.length);
       let q=(s.kw||'').trim()||'nature';
-      let vids=await search(q,per+4,ori);
-      if(!vids.length&&q.includes(' ')){vids=await search(q.split(' ')[0],per+4,ori)}
+      let vids=await getClips(q,per+4,ori);
+      if(vids.length<per&&q.includes(' '))vids=vids.concat(await getClips(q.split(' ')[0],per+4,ori));
       for(const v of vids){
         if(s.clips.length>=per)break;
         if(used.has(v.id))continue;
-        const f=pick(v);if(!f)continue;
         used.add(v.id);
-        s.clips.push({id:v.id,image:v.image,link:f.link,width:Math.min(f.width,f.height),dur:v.duration});
+        s.clips.push(v);
       }
       drawClips(i);
     }
